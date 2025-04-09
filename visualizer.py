@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 import functools
 from argparse import ArgumentParser
@@ -20,7 +22,7 @@ def make_parser() -> ArgumentParser:
         help="Type of model to use, default to openai-proxy"
     )
     parser.add_argument(
-        "--hf-repo", type=str, default=None,
+        "--hf-repo", type=str, default="intfloat/e5-large-v2",
         help="Huggingface model repository, used when type is 'llm'. Default to None"
     )
     parser.add_argument(
@@ -56,64 +58,52 @@ def build_model_by_args(args) -> token_visualizer.TopkTokenModel:
     TGI_URL = ensure_os_env("TGI_URL")
 
     model: Optional[token_visualizer.TopkTokenModel] = None
+    model = token_visualizer.SentenceTransformerModel(repo="intfloat/e5-large-v2")
 
-    if args.type == "llm":
-        model = token_visualizer.TransformerModel(repo=args.hf_repo)
-    elif args.type == "tgi":
-        if args.tgi_url:
-            TGI_URL = args.tgi_url
-        model = token_visualizer.TGIModel(url=TGI_URL, details=True)
-    elif args.type == "oai":
-        model = token_visualizer.OpenAIModel(
-            base_url=BASE_URL,
-            api_key=OPENAI_API_KEY,
-            model_name=args.oai_model,
-        )
-    elif args.type == "oai-proxy":
-        model = token_visualizer.OpenAIProxyModel(
-            base_url=BASE_URL,
-            api_key=OPENAI_API_KEY,
-            model_name="gpt-4-turbo-2024-04-09",
-        )
-    else:
-        raise ValueError(f"Unknown model type {args.type}")
+    # if args.type == "llm":
+    #     model = token_visualizer.TransformerModel(repo=args.hf_repo)
+    # elif args.type == "tgi":
+    #     if args.tgi_url:
+    #         TGI_URL = args.tgi_url
+    #     model = token_visualizer.TGIModel(url=TGI_URL, details=True)
+    # elif args.type == "oai":
+    #     model = token_visualizer.OpenAIModel(
+    #         base_url=BASE_URL,
+    #         api_key=OPENAI_API_KEY,
+    #         model_name=args.oai_model,
+    #     )
+    # elif args.type == "oai-proxy":
+    #     model = token_visualizer.OpenAIProxyModel(
+    #         base_url=BASE_URL,
+    #         api_key=OPENAI_API_KEY,
+    #         model_name="gpt-4-turbo-2024-04-09",
+    #     )
+    # else:
+    #     raise ValueError(f"Unknown model type {args.type}")
 
     return model
 
 
 @logger.catch(reraise=True)
 def text_analysis(
-    text: str,
-    display_whitespace: bool,
-    do_sample: bool,
-    temperature: float,
-    max_tokens: int,
-    repetition_penalty: float,
-    num_beams: int,
-    topk: int,
-    topp: float,
-    topk_per_token: int,
+    query: str,
+    document: str,
     model: TopkTokenModel,  # model should be built in the interface
-) -> Tuple[str, str]:
-    model.display_whitespace = display_whitespace
-    model.do_sample = do_sample
-    model.temperature = temperature
-    model.max_tokens = max_tokens
-    model.repetition_penalty = repetition_penalty
-    model.num_beams = num_beams
-    model.topk = topk
-    model.topp = topp
-    model.topk_per_token = topk_per_token
+) -> Tuple[str, str, str]:
 
-    tokens = model.generate_topk_per_token(text)
-    html = model.html_to_visualize(tokens)
+    query_tokens, positive_tokens = model.generate_topk_per_token(query, document)
+    html_query = model.html_to_visualize(query_tokens)
+    html_positive = model.html_to_visualize(positive_tokens)
 
-    html += "<br>"
+    html_query += "<br>"
     if isinstance(model, token_visualizer.TGIModel) and model.num_prefill_tokens:
-        html += f"<div><strong>input tokens: {model.num_prefill_tokens}</strong></div>"
-    html += f"<div><strong>output tokens: {len(tokens)}</strong></div>"
-
-    return model.generated_answer, html
+        html_query += f"<div><strong>input tokens: {model.num_prefill_tokens}</strong></div>"
+    html_query += f"<div><strong>query tokens: {len(query_tokens)}</strong></div>"
+    html_positive += "<br>"
+    if isinstance(model, token_visualizer.TGIModel) and model.num_prefill_tokens:
+        html_positive += f"<div><strong>input tokens: {model.num_prefill_tokens}</strong></div>"
+    html_positive += f"<div><strong>positive tokens: {len(positive_tokens)}</strong></div>"
+    return model.query_tokens, html_query, model.positive_tokens, html_positive
 
 
 def build_inference_analysis_demo(args):
@@ -123,19 +113,13 @@ def build_inference_analysis_demo(args):
     interface = gr.Interface(
         inference_func,
         [
-            gr.TextArea(placeholder="Please input text here"),
-            gr.Checkbox(value=False, label="display whitespace in output"),
-            gr.Checkbox(value=True, label="do_sample"),
-            gr.Slider(minimum=0, maximum=1, step=0.05, value=1.0, label="temperature"),
-            gr.Slider(minimum=1, maximum=4096, step=1, value=512, label="max tokens"),
-            gr.Slider(minimum=1, maximum=2, step=0.1, value=1.0, label="repetition penalty"),
-            gr.Slider(minimum=1, maximum=10, step=1, value=1, label="num beams"),
-            gr.Slider(minimum=1, maximum=100, step=1, value=50, label="topk"),
-            gr.Slider(minimum=0, maximum=1, step=0.05, value=1.0, label="topp"),
-            gr.Slider(minimum=1, maximum=10, step=1, value=5, label="per-token topk"),
+            gr.TextArea(placeholder="Please input query here", label="Query"),
+            gr.TextArea(placeholder="Please input document here", label="Document"),
         ],
         [
-            gr.TextArea(label="LLM answer"),
+            gr.TextArea(label="Query tokens"),
+            "html",
+            gr.TextArea(label="Positive tokens"),
             "html",
         ],
         examples=[
@@ -215,8 +199,8 @@ def demo():
     with demo:
         with gr.Tab("Inference"):
             build_inference_analysis_demo(args)
-        with gr.Tab("PPL"):
-            build_ppl_visualizer_demo(args)
+        # with gr.Tab("PPL"):
+            # build_ppl_visualizer_demo(args)
 
     demo.launch(
         server_name="0.0.0.0",

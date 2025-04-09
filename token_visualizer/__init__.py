@@ -9,6 +9,7 @@ from .models import (
     generate_topk_token_prob,
     load_model_tokenizer,
     openai_payload,
+    SentenceTransformerModel,
 )
 from .token_html import (
     Token,

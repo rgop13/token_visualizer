@@ -23,8 +23,6 @@ __all__ = [
 class Token:
     text: str
     prob: float
-    top_candidates: List = field(default_factory=list)
-    ppl: Union[float, None] = field(default=None)
 
     @property
     def logprob(self) -> float:
@@ -103,7 +101,6 @@ def single_token_html(token: Token) -> str:
     html_text += template.format(label="logprob", value=f"{token.logprob:.4f}")
     if token.ppl is not None:
         html_text += template.format(label="ppl", value=f"{token.ppl:.4f}")
-    html_text += candidate_tokens_html(token.top_candidates)
     html_text = f"<div class='ppl-hud'>{html_text}</div>"
     return html_text
 

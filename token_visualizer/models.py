@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -13,12 +14,14 @@ from openai import OpenAI
 from requests.adapters import HTTPAdapter
 from retrying import retry
 from urllib3.util import Retry
+from torch.nn import functional as F
 
 from .token_html import Token, tokens_info_to_html
 
 __all__ = [
     "TopkTokenModel",
     "TransformerModel",
+    "SentenceTransformerModel",
     "TGIModel",
     "OpenAIModel",
     "OpenAIProxyModel",
@@ -32,6 +35,13 @@ def load_model_tokenizer(repo):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     model = AutoModelForCausalLM.from_pretrained(repo, device_map="auto", trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(repo, use_fast=True, trust_remote_code=True)
+    return model, tokenizer
+
+
+def load_sentence_transformer_model_tokenizer(repo):
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer(repo, trust_remote_code=True)
+    tokenizer = model.tokenizer
     return model, tokenizer
 
 
@@ -84,6 +94,55 @@ def generate_topk_token_prob(
     topk_tokens = torch.topk(logits, k=num_topk_tokens).indices
     topk_probs = torch.gather(probs, -1, topk_tokens)
     return topk_tokens, topk_probs, outputs.sequences
+
+
+def generate_topk_token_prob_sentence_transformer(
+    query: str, document: str, model, tokenizer,
+    num_topk_tokens: int = 10,
+    inputs_device: str = "cuda:0",
+    **kwargs
+) -> Tuple[torch.Tensor, torch.Tensor, str, str]:
+    """
+    Generate topk token and it's prob for each token of auto regressive model.
+    """
+    if not torch.cuda.is_available():
+        inputs_device = "cpu"
+        model = model.to(inputs_device)
+        logger.warning(f"CUDA not available, switch to {inputs_device}.")
+
+    logger.info(f"generate response for:\n{query}\n{document}")
+    query_embeddings = model.encode(
+        query, 
+        convert_to_tensor=True,
+        show_progress_bar=False,
+    )
+    query_token_embedidngs = model.encode(
+        query, 
+        convert_to_tensor=True,
+        show_progress_bar=False,
+        output_value="token_embeddings",
+        normalize_embeddings=True,
+    )
+    pos_embeddings = model.encode(
+        document, 
+        convert_to_tensor=True,
+        show_progress_bar=False,
+    )
+    pos_token_embeddings = model.encode(
+        document, 
+        convert_to_tensor=True,
+        show_progress_bar=False,
+        output_value="token_embeddings",
+        normalize_embeddings=True,
+    )
+    query_ids = tokenizer.encode(query)
+    positive_ids = tokenizer.encode(document)
+    
+    qp_elementwise_product = query_embeddings * pos_embeddings
+    q_token_contributions = model.similarity(query_token_embedidngs, qp_elementwise_product).squeeze()
+    p_token_contributions = model.similarity(pos_token_embeddings, qp_elementwise_product).squeeze()
+    
+    return q_token_contributions, p_token_contributions, query_ids, positive_ids
 
 
 def openai_top_response_tokens(response: Dict) -> List[Token]:
@@ -195,6 +254,55 @@ class TransformerModel(TopkTokenModel):
             display_token = Token(f"{rev_vocab[seq_id]}", seq_id_prob, candidate_tokens)
             gen_tokens.append(display_token)
         return gen_tokens
+    
+
+@dataclass
+class SentenceTransformerModel(TopkTokenModel):
+
+    repo: Optional[str] = None
+    model = None
+    tokenizer = None
+    rev_vocab = None
+
+    def get_model_tokenizer(self):
+        assert self.repo, "Please provide repo name to load model and tokenizer."
+        if self.model is None or self.tokenizer is None:
+            self.model, self.tokenizer = load_sentence_transformer_model_tokenizer(self.repo)
+        if self.rev_vocab is None:
+            self.rev_vocab = format_reverse_vocab(self.tokenizer)
+        return self.model, self.tokenizer
+
+    def generate_topk_per_token(self, query: str, document: str) -> Tuple[List[Token], List[Token]]:
+        model, tokenizer = self.get_model_tokenizer()
+        rev_vocab = self.rev_vocab
+        assert rev_vocab, f"Reverse vocab not loaded for {self.repo} model"
+
+        q_token_contributions, p_token_contributions, query_ids, positive_ids = generate_topk_token_prob_sentence_transformer(
+            query, document, model, tokenizer, num_topk_tokens=self.topk_per_token,
+            do_sample=self.do_sample,
+            temperature=max(self.temperature, 0.01),
+            max_new_tokens=self.max_tokens,
+            repetition_penalty=self.repetition_penalty,
+            num_beams=self.num_beams,
+            top_k=self.topk,
+            top_p=self.topp,
+        )
+        self.query_tokens = tokenizer.decode(query_ids)
+        self.positive_tokens = tokenizer.decode(positive_ids)
+        seq_length = q_token_contributions.shape[0]
+        np_seq = np.array(query_ids)[-seq_length:]
+        query_tokens_display = []
+        for seq_id, token, prob in zip(np_seq, query_ids, q_token_contributions.cpu().numpy()):
+            display_token = Token(f"{rev_vocab[seq_id]}", prob)
+            query_tokens_display.append(display_token)
+            
+        seq_length = p_token_contributions.shape[0]
+        np_seq = np.array(positive_ids)[-seq_length:]
+        positive_tokens_display = []
+        for seq_id, token, prob in zip(np_seq, positive_ids, p_token_contributions.cpu().numpy()):
+            display_token = Token(f"{rev_vocab[seq_id]}", prob)
+            positive_tokens_display.append(display_token)
+        return query_tokens_display, positive_tokens_display
 
 
 def tgi_response(  # type: ignore[return]
