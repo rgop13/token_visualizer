@@ -112,15 +112,15 @@ def build_inference_analysis_demo(args):
 
     interface = gr.Interface(
         inference_func,
-        [
+        inputs=[
             gr.TextArea(placeholder="Please input query here", label="Query"),
             gr.TextArea(placeholder="Please input document here", label="Document"),
         ],
-        [
+        outputs=[
             gr.TextArea(label="Query tokens"),
-            "html",
+            gr.HTML(label="Query tokens html"),
             gr.TextArea(label="Positive tokens"),
-            "html",
+            gr.HTML(label="Positive tokens html"),
         ],
         examples=[
             ["Who are Hannah Quinlivan's child?"],
