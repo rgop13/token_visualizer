@@ -26,6 +26,7 @@ __all__ = [
     "OpenAIModel",
     "OpenAIProxyModel",
     "generate_topk_token_prob",
+    "generate_topk_token_prob_sentence_transformer",
     "load_model_tokenizer",
     "openai_payload",
 ]
@@ -56,6 +57,8 @@ def format_reverse_vocab(tokenizer) -> Dict[int, str]:
     for idx, token in rev_vocab.items():
         if sp_space in token:
             rev_vocab[idx] = token.replace(sp_space, "␣")
+        if token.startswith('##'):
+            rev_vocab[idx] = token.replace('##', '')
         elif token.isspace():  # token like \n, \t or multiple spaces
             rev_vocab[idx] = repr(token)[1:-1]  # 1:-1 to strip ', it will convert \n to \\n
         elif token.startswith("<") and token.endswith(">"):  # tokens like <s>
@@ -135,12 +138,16 @@ def generate_topk_token_prob_sentence_transformer(
         output_value="token_embeddings",
         normalize_embeddings=True,
     )
-    query_ids = tokenizer.encode(query)
-    positive_ids = tokenizer.encode(document)
+    
+    query_ids = tokenizer.encode(query, add_special_tokens=False)
+    positive_ids = tokenizer.encode(document, add_special_tokens=False)
     
     qp_elementwise_product = query_embeddings * pos_embeddings
-    q_token_contributions = model.similarity(query_token_embedidngs, qp_elementwise_product).squeeze()
-    p_token_contributions = model.similarity(pos_token_embeddings, qp_elementwise_product).squeeze()
+    # qp_tokenwise_similarity = model.similarity(query_token_embedidngs[1:-1], pos_token_embeddings[1:-1]).squeeze()   # (num_q_tokens, num_p_tokens)
+    # q_token_probs = torch.softmax(qp_tokenwise_similarity, dim=0)   # (num_q_tokens)
+    # p_token_probs = torch.softmax(qp_tokenwise_similarity, dim=1)   # (num_p_tokens)
+    q_token_contributions = model.similarity(query_token_embedidngs, qp_elementwise_product).squeeze()[1:-1]    # (num_q_tokens)
+    p_token_contributions = model.similarity(pos_token_embeddings, qp_elementwise_product).squeeze()[1:-1]    # (num_p_tokens)
     
     return q_token_contributions, p_token_contributions, query_ids, positive_ids
 
@@ -207,9 +214,9 @@ class TopkTokenModel:
         """
         raise NotImplementedError
 
-    def html_to_visualize(self, tokens: List[Token]) -> str:
+    def html_to_visualize(self, tokens: List[Token], space: List[bool]) -> str:
         """Generate html to visualize the tokens."""
-        return tokens_info_to_html(tokens, display_whitespace=self.display_whitespace)
+        return tokens_info_to_html(tokens, display_whitespace=self.display_whitespace, space=space)
 
 
 @dataclass
@@ -287,8 +294,22 @@ class SentenceTransformerModel(TopkTokenModel):
             top_k=self.topk,
             top_p=self.topp,
         )
+        query_space = []
+        for word in query.split():
+            tokens = tokenizer.tokenize(word)
+            spaces = [False] * (len(tokens) - 1) + [True]
+            query_space.extend(spaces)
+        # query_space.append(True)
+        pos_space = []
+        for word in document.split():
+            tokens = tokenizer.tokenize(word)
+            spaces = [False] * (len(tokens) - 1) + [True]
+            pos_space.extend(spaces)
+        # pos_space.append(True)
         self.query_tokens = tokenizer.decode(query_ids)
+        self.query_space = query_space
         self.positive_tokens = tokenizer.decode(positive_ids)
+        self.positive_space = pos_space
         seq_length = q_token_contributions.shape[0]
         np_seq = np.array(query_ids)[-seq_length:]
         query_tokens_display = []
@@ -500,3 +521,12 @@ class OpenAIProxyModel(TopkTokenModel):
         response = self.openai_api_call(payload)
         self.generated_answer = response["choices"][0]["message"]["content"]
         return openai_top_response_tokens(response)
+
+
+if __name__ == "__main__":
+    model = SentenceTransformerModel(repo="sentence-transformers/all-MiniLM-L6-v2")
+    query = "What is the capital of France?"
+    document = "France is a country in Western Europe."
+    query_tokens, positive_tokens = model.generate_topk_per_token(query, document)
+    print(query_tokens)
+    print(positive_tokens)

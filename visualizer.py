@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import json
+import jsonlines
 os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 import functools
@@ -22,7 +24,7 @@ def make_parser() -> ArgumentParser:
         help="Type of model to use, default to openai-proxy"
     )
     parser.add_argument(
-        "--hf-repo", type=str, default="intfloat/e5-large-v2",
+        "--hf-repo", type=str, default="intfloat/e5-large-v2",  # intfloat/e5-large-v2
         help="Huggingface model repository, used when type is 'llm'. Default to None"
     )
     parser.add_argument(
@@ -58,7 +60,7 @@ def build_model_by_args(args) -> token_visualizer.TopkTokenModel:
     TGI_URL = ensure_os_env("TGI_URL")
 
     model: Optional[token_visualizer.TopkTokenModel] = None
-    model = token_visualizer.SentenceTransformerModel(repo="intfloat/e5-large-v2")
+    model = token_visualizer.SentenceTransformerModel(repo=args.hf_repo)
 
     # if args.type == "llm":
     #     model = token_visualizer.TransformerModel(repo=args.hf_repo)
@@ -92,8 +94,10 @@ def text_analysis(
 ) -> Tuple[str, str, str]:
 
     query_tokens, positive_tokens = model.generate_topk_per_token(query, document)
-    html_query = model.html_to_visualize(query_tokens)
-    html_positive = model.html_to_visualize(positive_tokens)
+    query_space = model.query_space
+    positive_space = model.positive_space
+    html_query = model.html_to_visualize(query_tokens, query_space)
+    html_positive = model.html_to_visualize(positive_tokens, positive_space)
 
     html_query += "<br>"
     if isinstance(model, token_visualizer.TGIModel) and model.num_prefill_tokens:
@@ -109,7 +113,22 @@ def text_analysis(
 def build_inference_analysis_demo(args):
     model = build_model_by_args(args)
     inference_func = functools.partial(text_analysis, model=model)
-
+    
+    base_dir = "/data/sjy/project/result/mining_result"
+    data_name = "nq_dev_Llama-3.1-70B-Instruct_positive.jsonl"
+    data_path = os.path.join(base_dir, data_name)
+    examples = []
+    with jsonlines.open(data_path) as reader:
+        for line in reader:
+            query = line["anchor"]
+            positive = line["positive"]
+            generated_positive = line["generated_positives"][0]
+            generated_positive = generated_positive.split(':')[1:]
+            generated_positive = ' '.join(generated_positive)
+            examples.append([query, positive])
+            examples.append([query, generated_positive])
+            if len(examples) >= 20:
+                break
     interface = gr.Interface(
         inference_func,
         inputs=[
@@ -122,11 +141,8 @@ def build_inference_analysis_demo(args):
             gr.TextArea(label="Positive tokens"),
             gr.HTML(label="Positive tokens html"),
         ],
-        examples=[
-            ["Who are Hannah Quinlivan's child?"],
-            ["Write python code to read a file and print its content."],
-        ],
-        title="LLM inference analysis",
+        examples=examples,
+        title="Retrieval analysis",
     )
     return interface
 

@@ -61,27 +61,32 @@ def candidate_tokens_html(topk_candidate_tokens: List[Token]) -> str:
 
 def color_token_by_logprob(
     log_prob: float, min_log_prob: float, max_log_prob: float,
-    hue_red: int = 0, hue_green: int = 150, epsilon: float = 1e-5,
+    hue_green: int = 120, lightness_white: float = 1.0, lightness_green: float = 0.5, epsilon: float = 1e-5,
 ) -> str:
     """According to the token's log prob, assign RGB color to the token.
-    reference: https://twitter.com/thesephist/status/1617909119423500288
+    Higher probabilities are closer to green, lower probabilities are closer to white.
 
     Args:
         log_prob (float): log prob of the token.
         min_log_prob (float): min log prob of all tokens.
         max_log_prob (float): max log prob of all tokens.
-        hue_red (int, optional): hue value of the red color. Defaults to 0.
-        hue_green (int, optional): hue value of the green color. Defaults to 150.
+        hue_green (int, optional): hue value of the green color. Defaults to 120.
+        lightness_white (float, optional): lightness value for white. Defaults to 1.0.
+        lightness_green (float, optional): lightness value for green. Defaults to 0.5.
         epsilon (float, optional): avoid divide by zero. Defaults to 1e-5.
     """
-    # clamp the log_prob and scale to (hsl_red, hsl_green)
+    # Clamp the log_prob and scale to (lightness_white, lightness_green)
     if min_log_prob == max_log_prob:
         ratio = 1  # set to green color
     else:
         log_prob = max(min_log_prob, min(log_prob, max_log_prob))
         ratio = (log_prob - min_log_prob) / max((max_log_prob - min_log_prob), epsilon)
-    hue = ratio * (hue_green - hue_red) + hue_red
-    red, green, blue = colorsys.hls_to_rgb(hue / 360.0, 0.85, 0.6)  # hls({hue}deg 85% 60%)
+    
+    # Calculate lightness based on the ratio
+    lightness = ratio * (lightness_green - lightness_white) + lightness_white
+    
+    # Convert HLS to RGB
+    red, green, blue = colorsys.hls_to_rgb(hue_green / 360.0, lightness, 0.6)
     rgb_string = f"rgb({int(red * 255)}, {int(green * 255)}, {int(blue * 255)})"
     return rgb_string
 
@@ -117,7 +122,7 @@ def tokens_min_max_logprob(tokens: List[Token]) -> Tuple[float, float]:
     return min_logprob, max_logprob
 
 
-def tokens_info_to_html(tokens: List[Token], display_whitespace: bool = True) -> str:
+def tokens_info_to_html(tokens: List[Token], display_whitespace: bool = True, space: List[bool] = None) -> str:
     """
     Generate html for a list of token, include token color and hover text.
 
@@ -128,7 +133,7 @@ def tokens_info_to_html(tokens: List[Token], display_whitespace: bool = True) ->
     set_tokens_ppl(tokens)
 
     tokens_html = ""
-    for token in tokens:
+    for token, is_space in zip(tokens, space):
         hover_html = single_token_html(token)
         rgb = color_token_by_logprob(token.logprob, min_logprob, max_logprob)
         is_newline = "\n" in token.text
@@ -138,6 +143,8 @@ def tokens_info_to_html(tokens: List[Token], display_whitespace: bool = True) ->
         token_html = f'<span class="ppl-token" style="background: {rgb};">{token_text}{hover_html}</span>'  # noqa
         if is_newline:
             token_html += "<br>"
+        if is_space:
+            token_html += "&nbsp;"
         tokens_html += token_html
     tokens_html = f'<div class="ppl-visualization-tokens" style="font-family: inherit;">{tokens_html}</div>'  # noqa
     return tokens_html
