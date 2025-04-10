@@ -127,7 +127,7 @@ def build_inference_analysis_demo(args):
             generated_positive = ' '.join(generated_positive)
             examples.append([query, positive])
             examples.append([query, generated_positive])
-            if len(examples) >= 20:
+            if len(examples) >= 200:
                 break
     interface = gr.Interface(
         inference_func,
